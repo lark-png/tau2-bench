@@ -371,6 +371,8 @@ def create_adapter(
 
             config = cascaded_config or CascadedConfig()
             model = config.llm.model
+        elif provider == "moshi":  # 🎯 新增 Moshi 默认模型名
+            model = "moshiko-pytorch-bf16"
         else:
             model = DEFAULT_AUDIO_NATIVE_MODELS[provider]
         logger.debug(
@@ -451,6 +453,15 @@ def create_adapter(
             cascaded_config=config,
             send_audio_instant=send_audio_instant,
             audio_format=audio_format,
+        )
+    elif provider == "moshi":  # 🎯 插入我们新写的 Moshi 适配器！
+        from tau2.voice.audio_native.moshi.discrete_time_adapter import (
+            MoshiDiscreteTimeAdapter,
+        )
+
+        adapter = MoshiDiscreteTimeAdapter(
+            tick_duration_ms=tick_duration_ms,
+            send_audio_instant=send_audio_instant,
         )
     else:
         raise ValueError(f"Unknown provider: {provider}")

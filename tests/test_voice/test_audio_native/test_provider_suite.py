@@ -125,6 +125,9 @@ PROVIDERS = [
             reason="XAI_API_KEY not set",
         ),
     ),
+    pytest.param(  # 🎯 新增本地 Moshi 服务商，不需要任何 skip 环境变量
+        "moshi",
+    ),
 ]
 
 SYSTEM_PROMPT = "You are a helpful assistant. Keep responses brief."

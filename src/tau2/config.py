@@ -14,8 +14,10 @@ DEFAULT_LOG_LEVEL = "ERROR"
 # =============================================================================
 DEFAULT_AGENT_IMPLEMENTATION = "llm_agent"
 DEFAULT_USER_IMPLEMENTATION = "user_simulator"
-DEFAULT_LLM_AGENT = "gpt-4.1-2025-04-14"
-DEFAULT_LLM_USER = "gpt-4.1-2025-04-14"
+# DEFAULT_LLM_AGENT = "gpt-4.1-2025-04-14"
+# DEFAULT_LLM_USER = "gpt-4.1-2025-04-14"
+DEFAULT_LLM_AGENT = "gpt-4o-mini-2024-07-18"
+DEFAULT_LLM_USER = "gpt-4o-mini-2024-07-18"
 DEFAULT_LLM_TEMPERATURE_AGENT = 0.0
 DEFAULT_LLM_TEMPERATURE_USER = 0.0
 DEFAULT_LLM_ARGS_AGENT = {"temperature": DEFAULT_LLM_TEMPERATURE_AGENT}
@@ -29,7 +31,8 @@ DEFAULT_LLM_ENV_INTERFACE = "gpt-4.1-2025-04-14"
 DEFAULT_LLM_ENV_INTERFACE_TEMPERATURE = 0.0
 DEFAULT_LLM_ENV_INTERFACE_ARGS = {"temperature": DEFAULT_LLM_ENV_INTERFACE_TEMPERATURE}
 
-DEFAULT_LLM_EVAL_USER_SIMULATOR = "claude-opus-4-5"
+# DEFAULT_LLM_EVAL_USER_SIMULATOR = "claude-opus-4-5"
+DEFAULT_LLM_EVAL_USER_SIMULATOR = "gpt-4o-mini-2024-07-18"
 
 # LLM debug logging
 DEFAULT_LLM_LOG_MODE = "latest"  # Options: "all", "latest"
@@ -135,9 +138,11 @@ DEFAULT_AUDIO_NATIVE_MAX_INACTIVE_SECONDS = 40.0  # fixed, stall detection
 # =============================================================================
 # OPENAI PROVIDER (overridable model/voice, fixed API constants)
 # =============================================================================
-DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-1.5"  # overridable
+# DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-1.5"  # overridable
+DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 _LEGACY_OPENAI_REALTIME_MODEL = "gpt-realtime-2025-08-28"
-DEFAULT_OPENAI_REALTIME_BASE_URL = "wss://api.openai.com/v1/realtime"  # fixed
+# DEFAULT_OPENAI_REALTIME_BASE_URL = "wss://api.openai.com/v1/realtime"  # fixed
+DEFAULT_OPENAI_REALTIME_BASE_URL = "ws://101.6.64.59:3011/v1/realtime"
 DEFAULT_OPENAI_VOICE = "alloy"  # overridable
 DEFAULT_OPENAI_NOISE_REDUCTION = "near_field"  # fixed: "near_field", "far_field", None
 DEFAULT_OPENAI_VAD_THRESHOLD_LOW = 0.2  # fixed
@@ -201,6 +206,7 @@ DEFAULT_AUDIO_NATIVE_MODELS = {
     "nova": DEFAULT_NOVA_MODEL,
     "qwen": DEFAULT_QWEN_MODEL,
     "livekit": "dummy",
+    "moshi": "moshiko-pytorch-bf16",  # 🎯 新增 Moshi 默认模型名
 }
 
 DEFAULT_AUDIO_NATIVE_REASONING_EFFORT: dict[str, str | None] = {
@@ -210,6 +216,7 @@ DEFAULT_AUDIO_NATIVE_REASONING_EFFORT: dict[str, str | None] = {
     "nova": None,
     "qwen": None,
     "livekit": None,
+    "moshi": None,  # 🎯 新增 Moshi 思考力度设定（本地模型不需要设置）
 }
 
 AUDIO_NATIVE_PROVIDER_TYPES = {
@@ -219,6 +226,7 @@ AUDIO_NATIVE_PROVIDER_TYPES = {
     "nova": "audio_native",
     "qwen": "audio_native",
     "livekit": "cascaded",
+    "moshi": "audio_native",  # 🎯 新增：标记 Moshi 为端到端原生音频模式
 }
 
 # =============================================================================

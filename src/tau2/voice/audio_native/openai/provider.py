@@ -179,10 +179,30 @@ class OpenAIRealtimeProvider:
 
         url = f"{self.BASE_URL}?model={self.model}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        # 打印关键连接信息
+        # print(f"[DEBUG] Actual Connecting URL: {url}")
+        # print(f"[DEBUG] Actual Model: {self.model}")
 
-        self.ws = await websockets.connect(url, additional_headers=headers)
+        # self.ws = await websockets.connect(url, additional_headers=headers)
 
-        response = await self.ws.recv()
+        # response = await self.ws.recv()
+
+        try:
+            # print("[DEBUG] Initiating websockets.connect...")
+            self.ws = await websockets.connect(url, additional_headers=headers)
+            # print("[DEBUG] websockets.connect handshake success!")
+        except Exception as e:
+            # print(f"[DEBUG] websockets.connect failed: {e}")
+            raise e
+
+        try:
+            # print("[DEBUG] Waiting to receive session.created event...")
+            response = await self.ws.recv()
+            # print(f"[DEBUG] Received first raw message: {response[:200]}")
+        except Exception as e:
+            # print(f"[DEBUG] ws.recv() failed: {e}")
+            raise e
+
         data = json.loads(response)
         if data.get("type") != "session.created":
             raise RuntimeError(f"Expected session.created, got {data.get('type')}")
@@ -266,6 +286,101 @@ class OpenAIRealtimeProvider:
             )
         return formatted_tools
 
+    # async def configure_session(
+    #     self,
+    #     system_prompt: str,
+    #     tools: List[Tool],
+    #     vad_config: OpenAIVADConfig,
+    #     modality: str = "text",
+    #     audio_format: Optional[AudioFormat] = None,
+    # ) -> None:
+    #     """Configure the realtime session with instructions, tools, and settings.
+
+    #     Sets up the session with the provided system prompt, available tools,
+    #     VAD configuration, and modality settings. Waits for confirmation from
+    #     the API before returning.
+
+    #     Args:
+    #         system_prompt: The system instructions for the assistant.
+    #         tools: List of tools available for the assistant to use.
+    #         vad_config: Voice Activity Detection configuration.
+    #         modality: The input/output modality. One of:
+    #             - "text": Text-only input and output.
+    #             - "audio": Audio input and audio output (with text transcription).
+    #             - "audio_in_text_out": Audio input with text-only output.
+    #         audio_format: Audio format for input/output. Defaults to telephony
+    #             (8kHz μ-law). Must be compatible with OpenAI Realtime API:
+    #             g711_ulaw (8kHz), g711_alaw (8kHz), or pcm16 (24kHz).
+
+    #     Raises:
+    #         RuntimeError: If not connected or if session configuration fails.
+    #         ValueError: If an unknown modality is specified or audio format unsupported.
+    #     """
+    #     if not self.is_connected:
+    #         raise RuntimeError("Not connected to API. Call connect() first.")
+
+    #     if modality == "text":
+    #         modalities = ["text"]
+    #     elif modality == "audio":
+    #         modalities = ["audio"]
+    #     elif modality == "audio_in_text_out":
+    #         modalities = ["text"]
+    #     else:
+    #         raise ValueError(f"Unknown modality: {modality}")
+
+    #     # Default to telephony format if not specified
+    #     if audio_format is None:
+    #         audio_format = TELEPHONY_AUDIO_FORMAT
+
+    #     # Store audio format for reference
+    #     self._audio_format = audio_format
+
+    #     audio_fmt = audio_format_to_openai(audio_format)
+
+    #     session = {
+    #         "type": "realtime",
+    #         "instructions": system_prompt,
+    #         "output_modalities": modalities,
+    #         "tools": self._format_tools_for_api(tools),
+    #         "tool_choice": "auto",
+    #     }
+
+    #     if self.reasoning_effort is not None:
+    #         session["reasoning"] = {"effort": self.reasoning_effort}
+
+    #     if modality in ("audio", "audio_in_text_out"):
+    #         session["audio"] = {
+    #             "input": {
+    #                 "format": audio_fmt,
+    #                 "transcription": {
+    #                     "model": DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
+    #                     "language": "en",
+    #                 },
+    #                 "noise_reduction": {"type": DEFAULT_OPENAI_NOISE_REDUCTION},
+    #                 "turn_detection": self._build_turn_detection_config(vad_config),
+    #             },
+    #         }
+
+    #     if modality == "audio":
+    #         session.setdefault("audio", {})["output"] = {
+    #             "format": audio_fmt,
+    #             "voice": DEFAULT_OPENAI_VOICE,
+    #         }
+
+    #     await self.ws.send(json.dumps({"type": "session.update", "session": session}))
+
+    #     while True:
+    #         response = await self.ws.recv()
+    #         data = json.loads(response)
+    #         event_type = data.get("type", "")
+
+    #         if event_type == "session.updated":
+    #             self._current_vad_config = vad_config
+    #             break
+    #         elif event_type == "error":
+    #             error_msg = data.get("error", {}).get("message", "Unknown error")
+    #             raise RuntimeError(f"Session configuration failed: {error_msg}")             
+
     async def configure_session(
         self,
         system_prompt: str,
@@ -274,35 +389,19 @@ class OpenAIRealtimeProvider:
         modality: str = "text",
         audio_format: Optional[AudioFormat] = None,
     ) -> None:
-        """Configure the realtime session with instructions, tools, and settings.
-
-        Sets up the session with the provided system prompt, available tools,
-        VAD configuration, and modality settings. Waits for confirmation from
-        the API before returning.
-
-        Args:
-            system_prompt: The system instructions for the assistant.
-            tools: List of tools available for the assistant to use.
-            vad_config: Voice Activity Detection configuration.
-            modality: The input/output modality. One of:
-                - "text": Text-only input and output.
-                - "audio": Audio input and audio output (with text transcription).
-                - "audio_in_text_out": Audio input with text-only output.
-            audio_format: Audio format for input/output. Defaults to telephony
-                (8kHz μ-law). Must be compatible with OpenAI Realtime API:
-                g711_ulaw (8kHz), g711_alaw (8kHz), or pcm16 (24kHz).
-
-        Raises:
-            RuntimeError: If not connected or if session configuration fails.
-            ValueError: If an unknown modality is specified or audio format unsupported.
-        """
+        """Configure the realtime session with instructions, tools, and settings. (Beta Protocol with Fixed Audio Format)"""
         if not self.is_connected:
             raise RuntimeError("Not connected to API. Call connect() first.")
 
+        # print("\n" + "="*50, flush=True)
+        # print(">>> ENTERED configure_session (Beta Schema) <<<", flush=True)
+        # print("="*50 + "\n", flush=True)
+
+        # 1. 在老版协议中，如果需要语音，modalities 必须同时包含 ["text", "audio"]
         if modality == "text":
             modalities = ["text"]
         elif modality == "audio":
-            modalities = ["audio"]
+            modalities = ["text", "audio"]
         elif modality == "audio_in_text_out":
             modalities = ["text"]
         else:
@@ -314,43 +413,60 @@ class OpenAIRealtimeProvider:
 
         # Store audio format for reference
         self._audio_format = audio_format
-
         audio_fmt = audio_format_to_openai(audio_format)
 
+        # =================【关键修复：将 dict 映射回 Beta 字符串】=================
+        beta_audio_fmt = "g711_ulaw"  # 默认降级为 g711_ulaw
+        if isinstance(audio_fmt, dict):
+            fmt_type = audio_fmt.get("type", "")
+            if fmt_type == "audio/pcmu":
+                beta_audio_fmt = "g711_ulaw"
+            elif fmt_type == "audio/pcma":
+                beta_audio_fmt = "g711_alaw"
+            elif fmt_type == "audio/pcm":
+                beta_audio_fmt = "pcm16"
+        elif isinstance(audio_fmt, str):
+            beta_audio_fmt = audio_fmt
+        # =====================================================================
+
+        # 2. 组装老版 Beta 协议标准的扁平 session 参数
         session = {
-            "type": "realtime",
+            "modalities": modalities,  # 恢复为老版的 modalities
             "instructions": system_prompt,
-            "output_modalities": modalities,
             "tools": self._format_tools_for_api(tools),
             "tool_choice": "auto",
         }
 
-        if self.reasoning_effort is not None:
-            session["reasoning"] = {"effort": self.reasoning_effort}
-
+        # 3. 展开嵌套的 audio 结构，变成老版的扁平格式，并使用修复后的 beta_audio_fmt 字符串
         if modality in ("audio", "audio_in_text_out"):
-            session["audio"] = {
-                "input": {
-                    "format": audio_fmt,
-                    "transcription": {
-                        "model": DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
-                        "language": "en",
-                    },
-                    "noise_reduction": {"type": DEFAULT_OPENAI_NOISE_REDUCTION},
-                    "turn_detection": self._build_turn_detection_config(vad_config),
-                },
+            session["input_audio_format"] = beta_audio_fmt   # 现在是合法的字符串 "g711_ulaw"
+            session["output_audio_format"] = beta_audio_fmt  # 现在是合法的字符串 "g711_ulaw"
+            session["input_audio_transcription"] = {
+                "model": "whisper-1",  # OpenAI Beta 协议官方推荐的转写模型是 "whisper-1"
             }
+            session["turn_detection"] = self._build_turn_detection_config(vad_config)
 
         if modality == "audio":
-            session.setdefault("audio", {})["output"] = {
-                "format": audio_fmt,
-                "voice": DEFAULT_OPENAI_VOICE,
-            }
+            session["voice"] = DEFAULT_OPENAI_VOICE
 
-        await self.ws.send(json.dumps({"type": "session.update", "session": session}))
+        payload = {"type": "session.update", "session": session}
 
+        # 打印准备发送给代理的完整 JSON 负载，供你核对
+        # print(">>> SENDING session.update Beta payload:", flush=True)
+        # print(json.dumps(payload, indent=2), flush=True)
+
+        try:
+            await self.ws.send(json.dumps(payload))
+        except Exception as e:
+            raise e
+
+        # 4. 循环等待并捕获服务器的返回事件
         while True:
-            response = await self.ws.recv()
+            try:
+                response = await self.ws.recv()
+            except Exception as e:
+                raise e
+
             data = json.loads(response)
             event_type = data.get("type", "")
 
@@ -360,6 +476,7 @@ class OpenAIRealtimeProvider:
             elif event_type == "error":
                 error_msg = data.get("error", {}).get("message", "Unknown error")
                 raise RuntimeError(f"Session configuration failed: {error_msg}")
+
 
     async def send_audio(self, audio_data: bytes) -> None:
         """Append audio data to the input audio buffer.
@@ -423,19 +540,77 @@ class OpenAIRealtimeProvider:
             f"audio_end_ms={audio_end_ms}"
         )
 
+    # async def receive_events(self) -> AsyncGenerator[BaseRealtimeEvent, None]:
+    #     """Async generator yielding parsed events from the WebSocket.
+
+    #     Yields TimeoutEvent when no message arrives within 10ms.
+    #     Raises RuntimeError if the connection closes unexpectedly.
+    #     """
+    #     if not self.is_connected:
+    #         raise RuntimeError("Not connected to API")
+
+    #     while self.is_connected:
+    #         try:
+    #             raw_message = await asyncio.wait_for(self.ws.recv(), timeout=0.01)
+    #             data = json.loads(raw_message)
+    #             event = parse_realtime_event(data)
+    #             yield event
+
+    #         except asyncio.TimeoutError:
+    #             yield TimeoutEvent(type="timeout")
+    #         except websockets.ConnectionClosed as e:
+    #             logger.error(
+    #                 f"OpenAI Realtime API: WebSocket connection closed "
+    #                 f"(code={e.code}, reason='{e.reason or 'no reason provided'}')"
+    #             )
+    #             raise RuntimeError(
+    #                 f"WebSocket connection closed unexpectedly "
+    #                 f"(code={e.code}, reason='{e.reason or 'no reason provided'}')"
+    #             ) from e
+    #         except websockets.ConnectionClosedError as e:
+    #             logger.error(
+    #                 f"OpenAI Realtime API: WebSocket connection closed unexpectedly "
+    #                 f"(code={e.code}, reason='{e.reason or 'no reason provided'}')"
+    #             )
+    #             raise RuntimeError(
+    #                 f"WebSocket connection closed unexpectedly "
+    #                 f"(code={e.code}, reason='{e.reason or 'no reason provided'}')"
+    #             ) from e
+    #         except Exception as e:
+    #             logger.error(
+    #                 f"OpenAI Realtime API: Error receiving event: {type(e).__name__}: {e}"
+    #             )
+    #             yield UnknownEvent(type="error", raw={"error": str(e)})
+
     async def receive_events(self) -> AsyncGenerator[BaseRealtimeEvent, None]:
         """Async generator yielding parsed events from the WebSocket.
 
-        Yields TimeoutEvent when no message arrives within 10ms.
-        Raises RuntimeError if the connection closes unexpectedly.
+        Supports Beta-to-GA event translation to bridge older proxy backends with modern Tau2.
         """
         if not self.is_connected:
             raise RuntimeError("Not connected to API")
+
+        # 建立 Beta 事件名到 GA 事件名的映射翻译表
+        beta_to_ga_mapping = {
+            "response.audio.delta": "response.output_audio.delta",
+            "response.audio.done": "response.output_audio.done",
+            "response.audio_transcript.delta": "response.output_audio_transcript.delta",
+            "response.audio_transcript.done": "response.output_audio_transcript.done",
+            "response.text.delta": "response.output_text.delta",
+            "response.text.done": "response.output_text.done",
+        }
 
         while self.is_connected:
             try:
                 raw_message = await asyncio.wait_for(self.ws.recv(), timeout=0.01)
                 data = json.loads(raw_message)
+
+                # 进行 Beta -> GA 事件名重写
+                event_type = data.get("type", "")
+                if event_type in beta_to_ga_mapping:
+                    # 临时将 Beta 事件名重写为 GA 格式，让底层解析器认识它
+                    data["type"] = beta_to_ga_mapping[event_type]
+
                 event = parse_realtime_event(data)
                 yield event
 
