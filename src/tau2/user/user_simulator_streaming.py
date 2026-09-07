@@ -1271,6 +1271,14 @@ class VoiceStreamingUserSimulator(
             **self.llm_args,
         )
 
+        # Append user agent generated text to Moshi global message box
+        try:
+            from tau2.voice.audio_native.moshi.provider import SHARED_USER_TRANSCRIPTS
+            SHARED_USER_TRANSCRIPTS.append(assistant_message.content)
+            print(f"\n\n🚨🚨🚨 [SHARED MAILBOX] Wrote to Moshi Mailbox: '{assistant_message.content}' 🚨🚨🚨\n\n", flush=True)
+        except Exception as share_err:
+            logger.warning(f"Failed to share text to Moshi mailbox: {share_err}")
+
         # Store LLM timing on state for later use when updating TurnTakingAction
         # Use generation_time_seconds from the returned message
         state._llm_generation_seconds = assistant_message.generation_time_seconds

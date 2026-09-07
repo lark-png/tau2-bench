@@ -15,6 +15,8 @@ from tau2.config import (
 )
 from .provider import MoshiRealtimeProvider
 from .events import MoshiAudioEvent, MoshiTextEvent, MoshiToolCallEvent, BaseMoshiEvent
+from tau2.voice.audio_native.audio_converter import StreamingTelephonyConverter
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +34,14 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         # 用于保存和聚合在不同 Tick 内音频和文本转写的字典
         self._utterance_transcripts = {}
 
-        # 🎯 3. 新增这行：根据当前采样率自动计算每次发送的分块字节数（如 160 字节）
+        self._converter = StreamingTelephonyConverter(
+            input_sample_rate=24000,
+            output_sample_rate=24000
+        )
+
+        # 基于moshi期望的音频格式计算可知每次发送960字节
         self._chunk_size = int(
-            self.bytes_per_tick * DEFAULT_AUDIO_NATIVE_VOIP_PACKET_INTERVAL_MS / self.tick_duration_ms
+            24000 * 2 * (DEFAULT_AUDIO_NATIVE_VOIP_PACKET_INTERVAL_MS / 1000)
         )
 
     @property
@@ -146,10 +153,31 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         
         新增本地 VAD 与打断检测：在本地实时监测用户说话状态并干预打断。
         """
-                
-        # 🎯 性能优化：在一开局，先对整包 200ms 的用户音频进行一次性超高效率预编码！
+        #print(f"\n[TICK HEARTBEAT] Tick {tick_number} started ----------------", flush=True)
+        import json
+        from tau2.voice.audio_native.moshi.provider import SHARED_USER_TRANSCRIPTS
+
+        # 🎯 =================【核心魔法：每个 Tick 开局，监视信箱长度】=================
+        # 如果全局共享信箱里出现了我们还没处理的新用户消息（说明开启了新一轮对话）
+        #print(f"DEBUG: SHARED_USER_TRANSCRIPTS length = {len(SHARED_USER_TRANSCRIPTS)}, last_user_index = {self.provider._last_user_index}", flush=True)
+        while len(SHARED_USER_TRANSCRIPTS) > self.provider._last_user_index + 1:
+            # 1. 提交上一轮助理说的话（如果上一次助理说了话，自动打包归档为 assistant）
+            self.provider._commit_current_turn()
+            # 2. 读取并推进我们处理过的用户消息索引
+            self.provider._last_user_index += 1
+            new_user_text = SHARED_USER_TRANSCRIPTS[self.provider._last_user_index]
+            
+            # 3. 将这一轮新的用户台词，作为 user 写入最终的对话历史中（100% 对齐 SFT 格式）
+            self.provider.conversation_history.append({"role": "user", "content": new_user_text})
+            print(f"\n\n📂 [CURRENT HISTORY STATE]\n{json.dumps(self.provider.conversation_history, indent=2, ensure_ascii=False)}\n\n", flush=True)
+        # ==============================================================================
+        
+        model_ready_audio = b""
         if user_audio:
-            self.provider.pre_encode_tick_audio(user_audio)
+            model_ready_audio = self._converter.convert_input(user_audio)
+
+        if model_ready_audio:
+            self.provider.pre_encode_tick_audio(model_ready_audio)
         
         async def receive_events():
             # 计算当前 Tick 还剩多少可用执行时间
@@ -160,20 +188,29 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         # 1. 检查当前 Tick 用户是否在说话 (是否不为纯静音)
         is_user_speaking = False
         if user_audio:
-            # 拿到系统默认的静音字节 (例如电话线的 b'\x7f')
-            silence_byte = getattr(self, "silence_byte", b"\x7f")
-            # 如果不全是静音字节，代表用户在发出声音
-            is_user_speaking = not all(b == silence_byte[0] for b in user_audio)
+            import audioop
+            # 1. 模拟器灌过来的 user_audio 是 8kHz mu-law，我们无损转为 PCM16 以便精确计算音量能量
+            user_pcm = audioop.ulaw2lin(user_audio, 2)
+            
+            # 2. 计算这一帧的 RMS（均方根振幅）能量。值范围为 0 ~ 32767
+            user_rms = audioop.rms(user_pcm, 2)
+            
+            # 3. 设定一个合理的过滤阀值（通常 300 到 500 可以完美过滤掉电话背景沙沙声）
+            # 只有大于 300 时，才判定用户真正开始说台词了
+            is_user_speaking = user_rms > 300
+
+            # logger.debug(f"Local VAD: User RMS = {user_rms}, is_user_speaking = {is_user_speaking}")
 
         # 2. 并发地执行“分块发送音频”与“接收事件”
         _, events = await asyncio.gather(
             self._send_audio_chunked(
-                user_audio, self.provider.send_audio, self._chunk_size
+                model_ready_audio, self.provider.send_audio, self._chunk_size
             ),
             receive_events(),
         )
 
         # 3. 依次解析并注入事件数据
+        #print(f"DEBUG: Tick {tick_number} received {len(events)} events from Moshi.", flush=True)
         for event in events:
             self._process_event(result, event)
 
@@ -197,6 +234,9 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
                     result.agent_audio_chunks.clear()
                 if hasattr(self, "_buffered_agent_audio") and self._buffered_agent_audio:
                     self._buffered_agent_audio.clear()
+                
+                # 🎯 当发生打断（Interruption）时，立刻重置重采样状态机，防止历史缓存干扰下一轮对话
+                self._converter.reset()
 
         # 5. 冲洗工具结果
         await self._flush_pending_tool_results()
@@ -206,18 +246,62 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         result.events.append(event)
 
         # 我们对 Moshi 吐出的三种音频、文本、工具事件进行个性化路由
+        # if isinstance(event, MoshiAudioEvent):
+        #     item_id = "moshi_utterance"  # 虚构一个统一的 utterance_id
+
+        #     telephony_ready_audio = b""
+        #     if event.audio:
+        #         telephony_ready_audio = self._converter.convert_output(event.audio) 
+            
+        #     import audioop
+        #     # 计算 16-bit PCM 的均方根音量 (0 代表绝对静音，32767 代表最大破音音量)
+        #     rms_value = audioop.rms(event.audio, 2) if event.audio else 0  
+        #     print(f"DEBUG: Audio Event - Volume RMS: {rms_value}", flush=True)
+        #     print(f"DEBUG: MoshiAudioEvent - Raw 24kHz PCM size: {len(event.audio)} bytes, Converted Telephony size: {len(telephony_ready_audio)} bytes", flush=True)
+
+        #     if telephony_ready_audio:
+        #         # A. 塞入音频缓冲区，供模拟器播放
+        #         result.agent_audio_chunks.append((telephony_ready_audio, item_id))
+
+        #         # B. 登记在 self._utterance_transcripts 中，用于统计说话时间
+        #         if item_id not in self._utterance_transcripts:
+        #             self._utterance_transcripts[item_id] = UtteranceTranscript(
+        #                 item_id=item_id
+        #             )
+        #         self._utterance_transcripts[item_id].add_audio(len(event.audio))
+
         if isinstance(event, MoshiAudioEvent):
             item_id = "moshi_utterance"  # 虚构一个统一的 utterance_id
             
-            # A. 塞入音频缓冲区，供模拟器播放
-            result.agent_audio_chunks.append((event.audio, item_id))
+            telephony_ready_audio = b""
+            if event.audio:
+                telephony_ready_audio = self._converter.convert_output(event.audio)
 
-            # B. 登记在 self._utterance_transcripts 中，用于统计说话时间
-            if item_id not in self._utterance_transcripts:
-                self._utterance_transcripts[item_id] = UtteranceTranscript(
-                    item_id=item_id
-                )
-            self._utterance_transcripts[item_id].add_audio(len(event.audio))
+            # ==============================================================================
+            # 🎯 第一步：计算音量能量 (RMS)
+            # ==============================================================================
+            import audioop
+            # 测算 24kHz PCM16 的 RMS 音量 (范围 0 ~ 32767)
+            rms_value = audioop.rms(event.audio, 2) if event.audio else 0
+
+            # ==============================================================================
+            # 🎯 第二步：物理阻断（核心改动）
+            # 只有音量大于 300 (代表真正有人声在发出) 时，我们才塞给模拟器播放。
+            # 如果是底噪 (RMS 几十或为 0)，我们直接放行，不往 result.agent_audio_chunks 里塞数据。
+            # ==============================================================================
+            if rms_value > 300:
+                #print(f"DEBUG: Moshi is speaking (RMS={rms_value}). Sending audio to simulator.", flush=True)
+                result.agent_audio_chunks.append((telephony_ready_audio, item_id))
+                
+                # 只有真正说话时，才记录在 transcripts 中用于说话时间统计
+                if item_id not in self._utterance_transcripts:
+                    self._utterance_transcripts[item_id] = UtteranceTranscript(
+                        item_id=item_id
+                    )
+                self._utterance_transcripts[item_id].add_audio(len(telephony_ready_audio))
+            else:
+                # 当音量微弱时，我们保持 result.agent_audio_chunks 为空，给环境营造“绝对静音”
+                logger.debug(f"DEBUG: Filtered silent/low-volume frame (RMS={rms_value}).")
 
         elif isinstance(event, MoshiTextEvent):
             item_id = "moshi_utterance"

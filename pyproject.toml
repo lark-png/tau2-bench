@@ -36,6 +36,8 @@ dependencies = [
     "websocket-client>=1.9.0",
     "soundfile>=0.14.0",
     "scipy>=1.16.3",
+    "sphn>=0.2.1",
+    "pyaudio>=0.2.14",
 ]
 
 [project.optional-dependencies]
