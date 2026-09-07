@@ -248,7 +248,7 @@ class DiscreteTimeAdapter(ABC):
         if remaining > 0:
             await asyncio.sleep(remaining)
 
-        logger.info(f"Tick {tick_number} completed:\n{result.summary()}")
+        # logger.info(f"Tick {tick_number} completed:\n{result.summary()}")
         return result
 
     @abstractmethod

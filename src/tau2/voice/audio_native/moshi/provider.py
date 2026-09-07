@@ -4,10 +4,10 @@ import logging
 import urllib.parse
 from typing import Optional, List, Dict
 import websockets
-import re  # 🎯 新增导入：用于特殊 Token 的正则匹配
+import re
 import io
-import scipy.signal  # 用于将 16kHz 重采样到 24kHz
-import soundfile as sf  # 用于在内存中将原始 PCM 压制为标准的 Ogg/Opus 字节流
+import scipy.signal
+import soundfile as sf
 from .events import MoshiAudioEvent, MoshiTextEvent, MoshiToolCallEvent, BaseMoshiEvent
 import sphn
 
@@ -184,6 +184,17 @@ class MoshiRealtimeProvider:
             if not self.is_connected:
                 return []
 
+            while len(SHARED_USER_TRANSCRIPTS) > self._last_user_index + 1:
+                # 1) 用户开始新一轮发言，意味着 Moshi 上一轮的发言已经结束，先将其打包存入历史
+                self._commit_current_turn()
+
+                # 2) 提取用户的新发言并追加到最终历史中
+                self._last_user_index += 1
+                new_user_text = SHARED_USER_TRANSCRIPTS[self._last_user_index].strip()
+                if new_user_text:
+                    self.conversation_history.append({"role": "user", "content": new_user_text})
+                    logger.info(f"📝 [History Commit] user: {new_user_text}")
+
             events = []
             end_time = asyncio.get_event_loop().time() + duration_seconds
 
@@ -283,11 +294,3 @@ class MoshiRealtimeProvider:
     async def send_tool_result(self, call_id: str, result: str) -> None:
         """(待实现) 将环境执行后的工具结果反馈给 Moshi。"""
         pass
-    
-    def _cheat_get_current_user_text_from_stack(self) -> str:
-        """从项目全局信箱中，直接提取用户模拟器生成的最新一句话文本。"""
-        if SHARED_USER_TRANSCRIPTS:
-            # 拿到最新的一条台词
-            return SHARED_USER_TRANSCRIPTS[-1]
-            
-        return "FALLBACK_TEXT_NOT_FOUND"

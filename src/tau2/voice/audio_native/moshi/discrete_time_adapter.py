@@ -153,24 +153,6 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         
         新增本地 VAD 与打断检测：在本地实时监测用户说话状态并干预打断。
         """
-        #print(f"\n[TICK HEARTBEAT] Tick {tick_number} started ----------------", flush=True)
-        import json
-        from tau2.voice.audio_native.moshi.provider import SHARED_USER_TRANSCRIPTS
-
-        # 🎯 =================【核心魔法：每个 Tick 开局，监视信箱长度】=================
-        # 如果全局共享信箱里出现了我们还没处理的新用户消息（说明开启了新一轮对话）
-        #print(f"DEBUG: SHARED_USER_TRANSCRIPTS length = {len(SHARED_USER_TRANSCRIPTS)}, last_user_index = {self.provider._last_user_index}", flush=True)
-        while len(SHARED_USER_TRANSCRIPTS) > self.provider._last_user_index + 1:
-            # 1. 提交上一轮助理说的话（如果上一次助理说了话，自动打包归档为 assistant）
-            self.provider._commit_current_turn()
-            # 2. 读取并推进我们处理过的用户消息索引
-            self.provider._last_user_index += 1
-            new_user_text = SHARED_USER_TRANSCRIPTS[self.provider._last_user_index]
-            
-            # 3. 将这一轮新的用户台词，作为 user 写入最终的对话历史中（100% 对齐 SFT 格式）
-            self.provider.conversation_history.append({"role": "user", "content": new_user_text})
-            print(f"\n\n📂 [CURRENT HISTORY STATE]\n{json.dumps(self.provider.conversation_history, indent=2, ensure_ascii=False)}\n\n", flush=True)
-        # ==============================================================================
         
         model_ready_audio = b""
         if user_audio:
