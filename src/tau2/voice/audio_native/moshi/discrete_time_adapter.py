@@ -245,31 +245,6 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         """将捕获到的自定义 Moshi 事件，转换为评测框架的标准格式。"""
         result.events.append(event)
 
-        # 我们对 Moshi 吐出的三种音频、文本、工具事件进行个性化路由
-        # if isinstance(event, MoshiAudioEvent):
-        #     item_id = "moshi_utterance"  # 虚构一个统一的 utterance_id
-
-        #     telephony_ready_audio = b""
-        #     if event.audio:
-        #         telephony_ready_audio = self._converter.convert_output(event.audio) 
-            
-        #     import audioop
-        #     # 计算 16-bit PCM 的均方根音量 (0 代表绝对静音，32767 代表最大破音音量)
-        #     rms_value = audioop.rms(event.audio, 2) if event.audio else 0  
-        #     print(f"DEBUG: Audio Event - Volume RMS: {rms_value}", flush=True)
-        #     print(f"DEBUG: MoshiAudioEvent - Raw 24kHz PCM size: {len(event.audio)} bytes, Converted Telephony size: {len(telephony_ready_audio)} bytes", flush=True)
-
-        #     if telephony_ready_audio:
-        #         # A. 塞入音频缓冲区，供模拟器播放
-        #         result.agent_audio_chunks.append((telephony_ready_audio, item_id))
-
-        #         # B. 登记在 self._utterance_transcripts 中，用于统计说话时间
-        #         if item_id not in self._utterance_transcripts:
-        #             self._utterance_transcripts[item_id] = UtteranceTranscript(
-        #                 item_id=item_id
-        #             )
-        #         self._utterance_transcripts[item_id].add_audio(len(event.audio))
-
         if isinstance(event, MoshiAudioEvent):
             item_id = "moshi_utterance"  # 虚构一个统一的 utterance_id
             
