@@ -9,6 +9,7 @@ import io
 import scipy.signal
 import soundfile as sf
 from .events import MoshiAudioEvent, MoshiTextEvent, MoshiToolCallEvent, BaseMoshiEvent
+from .backend_agent import BackendAgent
 import sphn
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ class MoshiRealtimeProvider:
         # 🎯 新增这行：记录我们已经处理并写进历史的用户消息数量（初始化为 -1 代表一个都没处理过）
         self._last_user_index: int = -1
         self.opus_reader = sphn.OpusStreamReader(24000)
+
+        # 🎯 实例化新解耦的后端认知代理类
+        self.backend_agent = BackendAgent()
 
     @property
     def is_connected(self) -> bool:
@@ -237,9 +241,13 @@ class MoshiRealtimeProvider:
                             # 1) 提交助理当前历史（过滤掉 '<tool_call>' 并打印完整历史状态）
                             self._commit_current_turn()
 
-                            # 2) 🎯【测试阶段：安全地跳过真实的 GPT-4o 调用，不抛出网络崩溃】
-                            logger.info("🚨 [TEST BYPASS] Safely bypassed GPT-4o api call for now. 🚨")
-                            print(f"\n\n🏆🏆🏆 [SUCCESS] Alternating History Fully Built Before Tool Call:\n{json.dumps(self.conversation_history, indent=2, ensure_ascii=False)}\n\n", flush=True)
+                            # 2) 🚀 调用解耦后的后端模型进行链式工具调用和结果事实压缩
+                            logger.info("🚀 [GPT-4o Loop] Triggering real-time tool loop...")
+                            compact_fact_summary = await self.backend_agent.run_tool_loop(
+                                system_prompt=self.system_prompt,
+                                conversation_history=self.conversation_history,
+                                tools=self.tools
+                            )
                             
                             # 我们可以虚构一个临时的、错误的事件让框架优雅停下
                             events.append(
