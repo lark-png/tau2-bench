@@ -328,7 +328,11 @@ class _TaskLogContext:
         if self.save_dir:
             set_llm_log_dir(None)
         if self._handler_id is not None:
-            logger.remove(self._handler_id)
+            try:
+                logger.remove(self._handler_id)
+            except ValueError:
+                pass
+            self._handler_id = None
             _current_simulation_id.set(None)
         return False
 

@@ -71,11 +71,14 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
             # 制造一个极微小的 20ms 哑白噪音，进行一次模拟预编码
             dummy_pcm = b"\x00" * 320  # 160 samples * 2 bytes (20ms)
             self.provider.pre_encode_tick_audio(dummy_pcm)
+            if hasattr(self.provider, "_audio_chunks_queue"):
+                self.provider._audio_chunks_queue.clear()
             logger.info("Moshi audio encoder warmed up successfully.")
         except Exception as warm_err:
             logger.warning(f"Audio encoder warm-up skipped: {warm_err}")
 
         # 启动后台异步线程
+        self._bg_loop = BackgroundAsyncLoop()
         self._bg_loop.start()
 
         try:
@@ -114,7 +117,13 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         self._connected = False
         self._tick_count = 0
         self.clear_buffers()
-        logger.info("MoshiDiscreteTimeAdapter disconnected")
+
+        # 🎯 核心清理：任务结束彻底清空全局信箱、历史状态机与转写缓存
+        self.provider.reset_state()
+        self._converter.reset()
+        self._utterance_transcripts.clear()
+
+        logger.info("MoshiDiscreteTimeAdapter disconnected and fully reset.")
 
     async def _async_disconnect(self) -> None:
         """异步辅助：切断 WebSocket。"""

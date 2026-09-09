@@ -1296,9 +1296,9 @@ class VoiceStreamingUserSimulator(
         for message in linearized_messages:
             my_str += f"{message.role}: {message.content}\n"
 
-        logger.info(
-            f"USER SIMULATOR:\nSent to LLM:\n{my_str}\nReceived from LLM:\n{user_message.content}\n\n\n"
-        )
+        # logger.info(
+        #     f"USER SIMULATOR:\nSent to LLM:\n{my_str}\nReceived from LLM:\n{user_message.content}\n\n\n"
+        # )
 
         # Flip the requestor of tool calls
         if assistant_message.tool_calls is not None:

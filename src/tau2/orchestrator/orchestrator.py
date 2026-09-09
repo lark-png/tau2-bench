@@ -290,6 +290,17 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
                 )
                 self._cleanup()
 
+                import traceback
+                print("\n" + "="*40 + " [REAL EXCEPTION TRACEBACK] " + "="*40, flush=True)
+                traceback.print_exc()
+                print("="*105 + "\n", flush=True)
+
+                # 🎯 用 try...except 兜住清理异常，防止它再次遮盖真相
+                try:
+                    self._cleanup()
+                except Exception as cleanup_err:
+                    logger.warning(f"Cleanup error ignored: {cleanup_err}")
+
     def _initialize_environment(
         self,
         initialization_data: Optional[InitializationData],

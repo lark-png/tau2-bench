@@ -100,6 +100,17 @@ class MoshiRealtimeProvider:
         **kwargs,
     ) -> None:
         """注册工具和系统提示词（核心：通过断开并重连来实现）。"""
+        # 🎯 修复状态污染：每次会话建立或重试时，彻底清空上一轮残留的历史与信箱
+        # self.conversation_history.clear()
+        # self._current_agent_turn_text = ""
+        
+        # # 🎯 修复时序误杀：只保留信箱中最新的一条（即当前轮次刚刚进来的用户发言）
+        # if len(SHARED_USER_TRANSCRIPTS) > 1:
+        #     latest_msg = SHARED_USER_TRANSCRIPTS[-1]
+        #     SHARED_USER_TRANSCRIPTS.clear()
+        #     SHARED_USER_TRANSCRIPTS.append(latest_msg)
+        # self._last_user_index = -1
+
         # 1. 将工具和守则在本地存一份备用
         self.tools = tools
         self.system_prompt = system_prompt
@@ -112,6 +123,22 @@ class MoshiRealtimeProvider:
         # 3. 带上真实的 system_prompt 重新连上本地 Moshi
         await self._connect_with_prompt(system_prompt)
         logger.info("Moshi session configured successfully with true system prompt.")
+    
+    async def send_text_to_moshi(self, text: str) -> None:
+        """像用户打字一样，通过 WebSocket 将文本数据送入 Moshi 服务端。
+        
+        该文本数据将被包装成 0x02 (Text) 类型包，直接灌入 Moshi 服务端的接收循环 (recv_loop) 中。
+        """
+        if self.is_connected and self.ws:
+            try:
+                # 🎯 使用 0x02（二进制 Tag）作为前缀，拼接文本的字节码
+                payload = b"\x02" + text.encode("utf-8")
+                await self.ws.send(payload)
+                logger.info(f"Successfully sent text payload back to Moshi server.")
+            except Exception as e:
+                logger.error(f"Failed to send text payload to Moshi: {e}")
+        else:
+            logger.warning("Skipped sending text payload because WebSocket is not connected.")
 
     def pre_encode_tick_audio(self, user_audio: bytes) -> None:
         """🎯 性能优化核心：预先对整包 200ms 的用户音频进行一次性 Ogg/Opus 压缩，避免分包重复计算。"""
@@ -175,7 +202,9 @@ class MoshiRealtimeProvider:
         """只负责将 Moshi 临时积攒的文本打包存入最终的对话历史中。"""
         content = self._current_agent_turn_text.strip()
         if content:
-            clean_content = content.replace("<tool_call>", "").strip()
+            clean_content = re.sub(r"<tool_call>.*?</tool_call>|<tool_call>", "", content)
+            clean_content = re.sub(r"<tool_response>.*?</tool_response>|<tool_response>.*", "", clean_content, flags=re.DOTALL)
+            clean_content = clean_content.strip()
             if clean_content:
                 self.conversation_history.append({"role": "assistant", "content": clean_content})
                 logger.info(f"📝 [History Commit] assistant: {clean_content}")
@@ -229,6 +258,7 @@ class MoshiRealtimeProvider:
                     elif tag == 2:
                         # ---- 【分支 2：大脑独白文字数据 (Tag 0x02)】 ----
                         text_content = payload.decode("utf-8", errors="ignore")
+                        # print(f"DEBUG MOSHI TEXT: {repr(text_content)}", flush=True)
                         logger.debug(f"Moshi Monologue Stream: {text_content}")
 
                         # A. 持续在本地累加 Moshi 这一轮说的字符
@@ -236,6 +266,7 @@ class MoshiRealtimeProvider:
 
                         # B. 🎯 拦截调用指令：一旦发现累加的文字里出现了你训练的 "<tool_call>" 标记
                         if "<tool_call>" in self._current_agent_turn_text:
+                            print(f"\n🚨🚨🚨 [INTERCEPTED <tool_call>] Accum text: {repr(self._current_agent_turn_text)} 🚨🚨🚨\n", flush=True)
                             logger.info("🎯 Intercepted '<tool_call>' token from Moshi's stream!")
 
                             # 1) 提交助理当前历史（过滤掉 '<tool_call>' 并打印完整历史状态）
@@ -243,20 +274,30 @@ class MoshiRealtimeProvider:
 
                             # 2) 🚀 调用解耦后的后端模型进行链式工具调用和结果事实压缩
                             logger.info("🚀 [GPT-4o Loop] Triggering real-time tool loop...")
-                            compact_fact_summary = await self.backend_agent.run_tool_loop(
+                            compact_fact_summary, executed_tool_calls = await self.backend_agent.run_tool_loop(
                                 system_prompt=self.system_prompt,
                                 conversation_history=self.conversation_history,
                                 tools=self.tools
                             )
                             
-                            # 我们可以虚构一个临时的、错误的事件让框架优雅停下
-                            events.append(
-                                MoshiToolCallEvent(
-                                    call_id="dummy_test_id",
-                                    name="dummy_tool_for_test",
-                                    arguments={}
-                                )
-                            )
+                            # 3) 🚀 核心改进：将压缩好的事实通过 WebSocket（Tag 0x02）强行灌回给 custom_server 
+                            logger.info(f"📤 Feeding compact fact summary back to Moshi: {compact_fact_summary}")
+                            await self.send_text_to_moshi(compact_fact_summary)
+                            
+                            # 4) 🚀 核心改进：将实际在后台运行过、并成功修改了数据库状态的工具转换为真实的 MoshiToolCallEvent
+                            # 这一步能让评测框架（tau-voice）正确记录评测轨迹（Trajectory Logs），保障评测合规性
+                            if executed_tool_calls:
+                                for tool_call in executed_tool_calls:
+                                    events.append(
+                                        MoshiToolCallEvent(
+                                            call_id=tool_call["call_id"],
+                                            name=tool_call["name"],
+                                            arguments=tool_call["arguments"]
+                                        )
+                                    )
+                                    logger.info(f"Dispatched MoshiToolCallEvent to evaluation framework for: {tool_call['name']}({tool_call['call_id']})")
+                            else:
+                                print("No tool calls executed by GPT-4o; skipping tool event dispatch.")
                         else:
                             # 普通说话文字（没有触发工具），正常扔给框架，保持控制台转写同步显示
                             events.append(MoshiTextEvent(text=text_content))
@@ -299,6 +340,21 @@ class MoshiRealtimeProvider:
             logger.error(f"Error decoding Moshi Ogg/Opus back to PCM: {e}")
             return b""
 
-    async def send_tool_result(self, call_id: str, result: str) -> None:
-        """(待实现) 将环境执行后的工具结果反馈给 Moshi。"""
+    async def send_tool_result(self, *args, **kwargs) -> None:
+        """框架冲洗工具结果的钩子。
+        
+        因为工具调用已经在 Tick 内由 GPT-4o 实时执行完毕并修改了状态，
+        使用 *args, **kwargs 接收并安全 pass，兼容框架传入的任何参数组合。
+        """
+        logger.debug(f"send_tool_result bypassed because execution was completed in-tick.")
         pass
+    
+    def reset_state(self) -> None:
+        """任务结束时彻底清空 Provider 的对话历史、临时缓存与全局共享信箱。"""
+        global SHARED_USER_TRANSCRIPTS
+        SHARED_USER_TRANSCRIPTS.clear()
+        self.conversation_history.clear()
+        self._current_agent_turn_text = ""
+        self._last_user_index = -1
+        self._audio_chunks_queue.clear()
+        logger.info("🧹 [State Reset] Provider and shared mailbox fully cleared for next task.")

@@ -21,52 +21,76 @@ class BackendAgent:
         system_prompt: str,
         conversation_history: List[Dict[str, str]],
         tools: List[Any],
-    ) -> str:
-        """运行 GPT-4o 的工具调用与信息压缩循环，直接在本地执行所有链式工具调用。"""
+    ) -> tuple[str, list[dict[str, Any]]]:  # 🎯 修改返回类型为 Tuple
+        """运行 GPT-4o 的工具调用与信息压缩循环，并在本地执行它们，最终返回文本事实和被执行过的工具记录。"""
+        # 🎯 新增：用于收集本轮循环中实际执行过的工具调用列表
+        executed_tool_calls = []
+
         # 1. 将传入的自定义 Tool 对象转换为 OpenAI 兼容的 schema 字典格式
         openai_tools = []
         for tool in tools:
-            tool_name = getattr(tool, "name", "")
-            tool_desc = getattr(tool, "description", "")
-            tool_params = getattr(tool, "parameters", {})
-            if tool_name:
-                openai_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "description": tool_desc,
-                        "parameters": tool_params
-                    }
-                })
+            # 方式 A：如果 tau2 提供了官方封装好的 openai_schema 方法/属性
+            if hasattr(tool, "openai_schema"):
+                schema = tool.openai_schema
+                # 如果是方法则调用，如果是属性则直接取值
+                schema_dict = schema() if callable(schema) else schema
+                openai_tools.append(schema_dict)
+            else:
+                # 方式 B：从真实属性字段获取
+                tool_name = getattr(tool, "name", "")
+                tool_desc = getattr(tool, "short_desc", "") or getattr(tool, "long_desc", "")
+                tool_params = getattr(tool, "params", {})
+                if tool_name:
+                    openai_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "description": tool_desc,
+                            "parameters": tool_params
+                        }
+                    })
+        
 
-        # 2. 拼接系统任务守则和运行时的操作守则（Operational Directive）
+        # 2. 拼接系统任务守则和运行时的操作守则
         runtime_directive = (
             "\n\n[BACKEND AGENT OPERATIONAL DIRECTIVE]\n"
-            "You are acting as the backend tool-execution and information-compacting engine.\n\n"
+            "You are acting as the backend tool-execution and information-compacting engine in a duplex voice system.\n\n"
+            "CRITICAL MANDATE: EXTRACT PARAMETERS EXCLUSIVELY FROM 'USER' MESSAGES (ZERO TRUST IN ASSISTANT):\n"
+            "1. ZERO TRUST IN ASSISTANT: Messages with role 'assistant' are spoken by a real-time speech model that constantly hallucinates, repeats outdated/wrong IDs, and makes severe phonetic errors (e.g. inventing random numbers or names).\n"
+            "2. EXCLUSIVE PARAMETER SOURCE: You MUST extract entity parameters (reservation IDs, user IDs, customer names, emails, cancellation reasons) SOLELY and EXCLUSIVELY from messages where role is 'user'.\n"
+            "3. STRICT PROHIBITION: You are STRICTLY FORBIDDEN from using, copying, or inferring ANY reservation ID, user ID, or email mentioned by the 'assistant'. Treat all assistant statements as completely untrusted noise regarding user entities.\n"
+            "4. IMMEDIATE RESERVATION LOOKUP: Whenever the user mentions ANY 6-character alphanumeric code (e.g. 'EHGLP3'), treat it as the reservation ID and immediately call 'get_reservation_details(reservation_id=...)' as your FIRST action!\n\n"
             "Operational Flow & Multi-Step Reasoning:\n"
-            "1. Carefully analyze the dialogue history. To resolve the user's request, you are expected to perform multi-step, sequential reasoning.\n"
-            "2. You have the permission and responsibility to invoke tools multiple times in sequence (e.g., query a user ID first, then use that ID to fetch reservations). Do not hesitate to perform as many sequential tool calls as necessary to gather all required information.\n"
-            "3. Once you have executed all necessary tools and collected the final results, do NOT output conversational responses or spoken greetings (such as 'Here is what I found...').\n"
-            "4. Instead, compress and flatten the raw tool outputs into a highly factual, dense, semi-structured summary. Ensure that NO critical information is lost (such as reservation IDs, card digits, flight numbers, names, and exact pricing/amounts).\n"
-            "5. You MUST wrap this factual compact summary inside <tool_response> and </tool_response> tags as your final output.\n\n"
-            "Example Final Output format (when all tool calls are finished):\n"
-            "<tool_response>User aarav_ahmed_6699 profile: Silver member... Reservation M20IZO canceled. Refund of $490 processed back to card 5018.</tool_response>"
+            "1. Carefully analyze the dialogue history and adhere to the task policy in the system prompt.\n"
+            "2. You have the permission and responsibility to invoke tools multiple times in sequence (e.g., query reservation details first, check policy conditions, then proactively execute cancellation/refund or other required actions to resolve the user's intent).\n"
+            "3. DO NOT output conversational pleasantries, spoken greetings, or filler (e.g., no 'Here is what I found', no 'Hello', no polite closing).\n"
+            "4. DO NOT wrap your output in <tool_response> or any XML/HTML tags. Output ONLY the raw factual text (tags are added automatically by the system).\n"
+            "5. Compress and flatten the raw tool outputs into a highly factual, dense, semi-structured summary, keeping all critical numbers, names, IDs, and exact refund amounts.\n\n"
+            
+            "Example Final Output (PURE TEXT, NO TAGS):\n"
+            "Reservation EHGLP3 canceled successfully. Full refund of $54.00 processed back to original payment method ending in 7393."
         )
         combined_system_prompt = system_prompt + runtime_directive
 
-        # 3. 构造给 GPT-4o 的完整消息历史，首位是我们的 combined_system_prompt
+        # 3. 构造给 GPT-4o 的完整消息历史，首位是 combined_system_prompt
         messages = [{"role": "system", "content": combined_system_prompt}] + conversation_history
 
         logger.info("Starting GPT-4o tool execution loop...")
         
-        # 限制最大调用次数，防止陷入死循环
+        # 限制最大调用次数，防止由于模型或网络故障陷入无限死循环
         max_iterations = 10
         iteration = 0
+
+        # 🎯 监控点 1：打印 GPT-4o 本次被唤醒时看到的完整历史
+        print(f"\n{'='*30} [GPT-4O WAKE UP] {'='*30}", flush=True)
+        print(f"Conversation turns seen by GPT-4o: {len(conversation_history)}", flush=True)
+        for msg in conversation_history[-3:]: # 打印最近 3 轮
+            print(f"  [{msg['role']}]: {msg['content'][:100]}...", flush=True)
+        print(f"{'='*80}\n", flush=True)
 
         while iteration < max_iterations:
             iteration += 1
             try:
-                # 调用 OpenAI 接口，为了保证提取参数的稳定与精准，温和度（temperature）设为 0.0
                 response = await self.openai_client.chat.completions.create(
                     model="gpt-4.1-mini-2025-04-14",
                     messages=messages,
@@ -76,13 +100,13 @@ class BackendAgent:
                 )
             except Exception as api_err:
                 logger.error(f"Failed calling GPT-4o API: {api_err}")
-                return "<tool_response>Error: Failed to contact backend brain.</tool_response>"
+                return "<tool_response>Error: Failed to contact backend brain.</tool_response>", []
 
             message = response.choices[0].message
             
             # 检查是否有工具调用请求
             if message.tool_calls:
-                # 将 GPT-4o 发出的调用塞入 messages 历史中进行上下文同步
+                # 同步塞入 messages 历史中
                 messages.append(message)
                 logger.info(f"GPT-4o requested {len(message.tool_calls)} tool calls at iteration {iteration}.")
                 
@@ -96,15 +120,22 @@ class BackendAgent:
                         func_args = {}
                         logger.warning(f"Failed to parse tool arguments JSON: {json_err}")
 
+                    logger.info(f"Executing tool: {func_name} with args: {func_args}")
+
                     print(
-                        f"\n\n🛠️🛠️🛠️  [TOOL TRIGGERED] GPT-4o requested tool: '{func_name}' "
-                        f"\n👉 Parameters: {func_args_str} 🛠️🛠️🛠️\n\n", 
+                        f"\n🛠️🛠️🛠️  [TOOL INVOKED] Function: '{func_name}'\n"
+                        f"👉 Arguments: {json.dumps(func_args, ensure_ascii=False)}\n",
                         flush=True
                     )
-
-                    logger.info(f"Executing tool: {func_name} with args: {func_args}")
                     
-                    # 在本地 tools 中匹配对应的 executable tool 对象并直接调用
+                    # 🎯 新增：记录当前这个工具调用（用来生成评测轨迹所需的 MoshiToolCallEvent）
+                    executed_tool_calls.append({
+                        "call_id": tool_call.id,
+                        "name": func_name,
+                        "arguments": func_args
+                    })
+                    
+                    # 在本地 tools 中匹配并直接运行它
                     target_tool = next((t for t in tools if getattr(t, "name", "") == func_name), None)
                     
                     if target_tool is not None:
@@ -117,25 +148,21 @@ class BackendAgent:
                             
                             outcome_str = str(raw_outcome)
                             logger.info(f"Tool {func_name} executed successfully. Result length: {len(outcome_str)}")
-                            short_outcome = outcome_str[:200] + ("..." if len(outcome_str) > 200 else "")
+                            
                             print(
-                                f"\n\n✅✅✅  [TOOL EXECUTION SUCCESS] Tool: '{func_name}' "
-                                f"\n📝 Outcome Summary: {short_outcome} ✅✅✅\n\n", 
+                                f"✅✅✅  [DB OUTCOME] Tool '{func_name}' returned:\n"
+                                f"📄 {outcome_str[:300]}...\n",
                                 flush=True
                             )
+
                         except Exception as exec_err:
                             outcome_str = f"Execution Error: {exec_err}"
                             logger.error(f"Error executing tool {func_name}: {exec_err}")
-                            print(
-                                f"\n\n❌❌❌  [TOOL EXECUTION FAILED] Tool: '{func_name}' "
-                                f"\n⚠️ Error Message: {exec_err} ❌❌❌\n\n", 
-                                flush=True
-                            )
                     else:
                         outcome_str = f"Error: Tool '{func_name}' not found."
                         logger.warning(outcome_str)
 
-                    # 将执行结果作为 tool 角色反馈给 GPT-4o 上下文
+                    # 反馈执行结果给 GPT-4o 上下文
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -143,19 +170,27 @@ class BackendAgent:
                         "content": outcome_str
                     })
                 
-                # 继续下一次循环以让 GPT-4o 进行下一步评估
+                # 重新请求以进入下一轮分析
                 continue
 
             else:
-                # 没有工具调用了，说明 GPT-4o 已经生成了最终的事实压缩文本
+                # 没有新的工具调用，GPT-4o 决定给出最终总结
                 final_content = message.content or ""
                 logger.info(f"GPT-4o finished tool loop. Final output: {final_content}")
                 
                 # 兜底校准
                 if "<tool_response>" not in final_content:
                     final_content = f"<tool_response>{final_content.strip()}</tool_response>"
-                print(f"GPT-4o finished tool loop. Final output: {final_content}")
-                return final_content
+
+                print(
+                    f"\n📦📦📦  [GPT-4O FINAL FACT SUMMARY]:\n"
+                    f"{final_content}\n"
+                    f"{'='*80}\n",
+                    flush=True
+                )
+                
+                # 🎯 返回最终的事实总结和这轮循环里真正执行过的工具调用记录
+                return final_content, executed_tool_calls
 
         logger.warning("Reached max iterations in GPT-4o tool loop.")
-        return "<tool_response>Error: Max tool loop iterations reached.</tool_response>"
+        return "<tool_response>Error: Max tool loop iterations reached.</tool_response>", executed_tool_calls
