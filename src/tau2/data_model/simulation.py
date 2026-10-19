@@ -70,7 +70,7 @@ class AudioNativeConfig(BaseModel):
     """
 
     # Provider selection
-    provider: Literal["openai", "gemini", "xai", "nova", "qwen", "livekit", "moshi"] = Field(
+    provider: Literal["openai", "gemini", "xai", "nova", "qwen", "livekit", "moshi", "gander"] = Field(
         default=DEFAULT_AUDIO_NATIVE_PROVIDER,
         description="Audio native API provider: 'openai' (OpenAI Realtime), 'gemini' (Gemini Live), 'xai' (xAI Grok Voice Agent), 'nova' (Amazon Nova Sonic), 'qwen' (Alibaba Qwen Omni), or 'livekit' (LiveKit cascaded STT→LLM→TTS)",
     )

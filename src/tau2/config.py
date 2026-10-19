@@ -206,7 +206,8 @@ DEFAULT_AUDIO_NATIVE_MODELS = {
     "nova": DEFAULT_NOVA_MODEL,
     "qwen": DEFAULT_QWEN_MODEL,
     "livekit": "dummy",
-    "moshi": "moshiko-pytorch-bf16",  # 🎯 新增 Moshi 默认模型名
+    "moshi": "moshiko-pytorch-bf16",
+    "gander": "gander-local",
 }
 
 DEFAULT_AUDIO_NATIVE_REASONING_EFFORT: dict[str, str | None] = {
@@ -216,7 +217,8 @@ DEFAULT_AUDIO_NATIVE_REASONING_EFFORT: dict[str, str | None] = {
     "nova": None,
     "qwen": None,
     "livekit": None,
-    "moshi": None,  # 🎯 新增 Moshi 思考力度设定（本地模型不需要设置）
+    "moshi": None,
+    "gander": None,
 }
 
 AUDIO_NATIVE_PROVIDER_TYPES = {
@@ -226,7 +228,8 @@ AUDIO_NATIVE_PROVIDER_TYPES = {
     "nova": "audio_native",
     "qwen": "audio_native",
     "livekit": "cascaded",
-    "moshi": "audio_native",  # 🎯 新增：标记 Moshi 为端到端原生音频模式
+    "moshi": "audio_native",
+    "gander": "audio_native",
 }
 
 # =============================================================================

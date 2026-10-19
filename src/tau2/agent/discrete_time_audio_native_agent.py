@@ -80,7 +80,7 @@ from tau2.voice.audio_native.adapter import DiscreteTimeAdapter, create_adapter
 from tau2.voice.audio_native.tick_result import TickResult
 
 # Provider type alias
-AudioNativeProvider = Literal["openai", "gemini", "xai", "nova", "qwen", "livekit"]
+AudioNativeProvider = Literal["openai", "gemini", "xai", "nova", "qwen", "livekit", "moshi", "gander"]
 
 # VAD config union type (string annotations for lazy resolution)
 VADConfig = Union[
@@ -439,6 +439,24 @@ class DiscreteTimeAudioNativeAgent(FullDuplexAgent[DiscreteTimeAgentState]):
 
         # Extract user audio from participant chunk
         user_audio = self._extract_user_audio(participant_chunk)
+        # Gander's official runtime needs a turn.final event in addition to PCM audio.
+        if self.provider == "gander" and isinstance(participant_chunk, UserMessage):
+            text = (participant_chunk.content or "").strip()
+
+            if text and hasattr(self.adapter, "add_user_text_fragment"):
+                self.adapter.add_user_text_fragment(text)
+
+            action = getattr(participant_chunk.turn_taking_action, "action", None)
+            # print(
+            #     f"[GANDER DEBUG] user content={text!r}, "
+            #     f"turn_action={action!r}, contains_speech={participant_chunk.contains_speech}",
+            #     flush=True,
+            # )
+
+            # 暂时：只要 τ-Voice user simulator 产出了一句可用文本，就交给 Gander。
+            # 用于验证 turn.final 是否能唤起 Gander；后续再恢复为严格的句末触发。
+            if text and hasattr(self.adapter, "finalize_user_turn"):
+                self.adapter.finalize_user_turn()
         state.total_user_audio_bytes += len(user_audio)
 
         if self._agent_input_tap:

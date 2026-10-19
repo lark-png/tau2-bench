@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import uuid
+import time
 from typing import Any, Sequence
 
 import websockets
@@ -27,6 +28,11 @@ from .events import (
 
 logger = logging.getLogger(__name__)
 
+def tau_tool_schema(tool) -> dict:
+    schema = tool.openai_schema
+    if schema.get("type") == "function":
+        return schema["function"]
+    return schema
 
 class GanderRealtimeProvider:
     """One Gander WebSocket session.
@@ -50,44 +56,61 @@ class GanderRealtimeProvider:
         self.input_sample_rate = 16000
         self.output_sample_rate = 24000
         self.chunk_ms = 1000
+        self._turn_index = 0
 
     @property
     def is_connected(self) -> bool:
         return self.ws is not None and not getattr(self.ws, "closed", False)
 
-    async def connect(self) -> None:
+    async def connect(self, system_prompt: str, tools) -> None:
         if self.is_connected:
             return
+
         session_id = f"tau_{uuid.uuid4().hex}"
         separator = "&" if "?" in self.ws_url else "?"
         url = f"{self.ws_url}{separator}session_id={session_id}"
-        self.ws = await websockets.connect(url, max_size=None, ping_interval=20)
+
+        self.ws = await websockets.connect(
+            url,
+            max_size=None,
+            ping_interval=20,
+        )
+
+        tool_schemas = [tau_tool_schema(tool) for tool in tools]
+
+        print(
+            f"[GANDER TOOL] configuring session: "
+            f"{len(tool_schemas)} tools={[item['name'] for item in tool_schemas]}",
+            flush=True,
+        )
+
+        await self.ws.send(
+            json.dumps(
+                {
+                    "type": "session.configure",
+                    "system_prompt": system_prompt,
+                    "tools": tool_schemas,
+                },
+                ensure_ascii=False,
+            )
+        )
+
         ready = await asyncio.wait_for(self.ws.recv(), timeout=30)
         if not isinstance(ready, str):
             raise RuntimeError("Gander did not send a JSON ready event")
+
         payload = json.loads(ready)
         if payload.get("type") != "ready":
             raise RuntimeError(f"Gander session failed to become ready: {payload}")
+
         self.session_id = payload.get("session_id", session_id)
         self.input_sample_rate = int(payload.get("input_sample_rate", 16000))
         self.output_sample_rate = int(payload.get("output_sample_rate", 24000))
         self.chunk_ms = int(payload.get("chunk_ms", 1000))
-        if payload.get("audio_input", {}).get("encoding") not in (None, "pcm_s16le"):
-            raise RuntimeError(f"Unsupported Gander input encoding: {payload['audio_input']}")
-        logger.info(
-            "Connected to Gander session=%s input=%sHz output=%sHz chunk=%sms",
-            self.session_id,
-            self.input_sample_rate,
-            self.output_sample_rate,
-            self.chunk_ms,
-        )
 
-    async def configure_session(self, system_prompt: str, tools: Sequence[Any]) -> None:
-        self.system_prompt = system_prompt
-        self.tools = tools
-        logger.warning(
-            "Stock Gander /ws/duplex does not accept per-session prompt/tools. "
-            "Ensure serve.local.yaml starts Gander with tau's policy/tool schema."
+        print(
+            f"[GANDER TOOL] session ready: tools={payload.get('tools')}",
+            flush=True,
         )
 
     async def disconnect(self) -> None:
@@ -182,3 +205,19 @@ class GanderRealtimeProvider:
                 )
             )
         return output
+    
+    async def send_turn_final(self, text: str) -> None:
+        """Send τ-Voice's known final user transcript to Gander."""
+        text = (text or "").strip()
+        if not text:
+            return
+
+        self._turn_index += 1
+        payload = {
+            "type": "turn.final",
+            "turn_id": f"tau-{self.session_id}-{self._turn_index}",
+            "text": text,
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        #print("Gander -> turn.final: %r", text)
+        await self.ws.send(json.dumps(payload))

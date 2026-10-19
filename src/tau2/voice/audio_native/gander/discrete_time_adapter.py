@@ -45,6 +45,29 @@ class GanderDiscreteTimeAdapter(DiscreteTimeAdapter):
             output_sample_rate=24000,
         )
         self._chunk_size = int(16000 * 2 * DEFAULT_AUDIO_NATIVE_VOIP_PACKET_INTERVAL_MS / 1000)
+        self._user_text_fragments: list[str] = []
+        self._pending_final_user_turn: str | None = None
+
+    def add_user_text_fragment(self, text: str | None) -> None:
+        """Collect known user transcript text for the current spoken turn."""
+        text = (text or "").strip()
+        if text and (
+            not self._user_text_fragments
+            or self._user_text_fragments[-1] != text
+        ):
+            self._user_text_fragments.append(text)
+
+    def finalize_user_turn(self) -> None:
+        """Queue the completed user turn for Gander's turn.final control event."""
+        text = " ".join(self._user_text_fragments).strip()
+        self._user_text_fragments.clear()
+
+        if not text:
+            #print("Gander turn.final skipped: accumulated text is empty")
+            return
+
+        self._pending_final_user_turn = text
+        #print("Gander queued turn.final: %r", text)
 
     @property
     def is_connected(self) -> bool:
@@ -75,8 +98,7 @@ class GanderDiscreteTimeAdapter(DiscreteTimeAdapter):
             raise
 
     async def _async_connect(self, system_prompt: str, tools: Sequence[Tool]) -> None:
-        await self._provider.connect()
-        await self._provider.configure_session(system_prompt, tools)
+        await self._provider.connect(system_prompt, tools)
 
     def disconnect(self) -> None:
         if self._connected and self._bg_loop.is_running:
@@ -100,7 +122,18 @@ class GanderDiscreteTimeAdapter(DiscreteTimeAdapter):
 
     async def _execute_tick(self, user_audio: bytes, tick_number: int, result: TickResult, tick_start: float) -> None:
         pcm16 = self._converter.convert_input(user_audio) if user_audio else b""
-        remaining = max(0.01, self.tick_duration_ms / 1000 - (asyncio.get_running_loop().time() - tick_start))
+        if self._pending_final_user_turn:
+            text = self._pending_final_user_turn
+            self._pending_final_user_turn = None
+
+            #print("Gander flushing turn.final: %r", text)
+            await self._provider.send_turn_final(text)
+
+        remaining = max(
+            0.01,
+            self.tick_duration_ms / 1000
+            - (asyncio.get_running_loop().time() - tick_start),
+        )
         _, events = await asyncio.gather(
             self._send_audio_chunked(pcm16, self._provider.send_audio, self._chunk_size),
             self._provider.receive_events_for_duration(remaining),
@@ -110,7 +143,18 @@ class GanderDiscreteTimeAdapter(DiscreteTimeAdapter):
 
     async def _flush_pending_tool_results(self) -> None:
         for call_id, content, request_response, is_error in self._pending_tool_results:
-            await self._provider.send_tool_result(call_id, content, request_response, is_error)
+            print(
+                f"[GANDER TOOL] tool.result "
+                f"id={call_id} error={is_error} content={content}",
+                flush=True,
+            )
+            await self._provider.send_tool_result(
+                call_id=call_id,
+                result=content,
+                request_response=request_response,
+                is_error=is_error,
+            )
+
         self._pending_tool_results.clear()
 
     def _process_event(self, result: TickResult, event: Any) -> None:
@@ -125,7 +169,18 @@ class GanderDiscreteTimeAdapter(DiscreteTimeAdapter):
             transcript = self._utterance_transcripts.setdefault(event.item_id, UtteranceTranscript(item_id=event.item_id))
             transcript.add_transcript(event.text)
         elif isinstance(event, GanderToolCallEvent):
-            result.tool_calls.append(ToolCall(id=event.call_id, name=event.name, arguments=event.arguments))
+            print(
+                f"[GANDER TOOL] tool.call "
+                f"id={event.call_id} name={event.name} arguments={event.arguments}",
+                flush=True,
+            )
+            result.tool_calls.append(
+                ToolCall(
+                    id=event.call_id,
+                    name=event.name,
+                    arguments=event.arguments,
+                )
+            )
         elif isinstance(event, GanderPlaybackCancelEvent):
             result.was_truncated = True
             result.vad_events.append("interrupted")
