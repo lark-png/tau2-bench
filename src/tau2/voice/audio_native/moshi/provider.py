@@ -11,10 +11,25 @@ import soundfile as sf
 from .events import MoshiAudioEvent, MoshiTextEvent, MoshiToolCallEvent, BaseMoshiEvent
 from .backend_agent import BackendAgent
 import sphn
+import queue
+import os
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-SHARED_USER_TRANSCRIPTS: List[str] = []
+SHARED_USER_TRANSCRIPTS_MAP = defaultdict(list)
+
+# 🎯 改进：优先从环境变量 MOSHI_PORTS 读取当前启用的端口列表，没有指定则默认全开 8990~8997
+# 例如指定 "8990,8991,8992,8993,8994,8995,8997"（跳过 8996）
+default_ports_str = "8990,8991,8992,8993,8994,8995,8996,8997"
+configured_ports_str = os.environ.get("MOSHI_PORTS", default_ports_str)
+active_ports = [int(p.strip()) for p in configured_ports_str.split(",") if p.strip()]
+
+MOSHI_PORT_POOL = queue.Queue()
+for port in active_ports:
+    MOSHI_PORT_POOL.put(port)
+
+# SHARED_USER_TRANSCRIPTS: List[str] = []
 
 class MoshiRealtimeProvider:
     """Moshi Realtime local provider with WebSocket-based communication."""
@@ -22,10 +37,14 @@ class MoshiRealtimeProvider:
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 8998,
-    ):
+        port: int = 8990,
+    ):  
+        self.host = host
+        self.port = port
         self.ws_url = f"ws://{host}:{port}/api/chat"
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        self.sim_id: Optional[str] = None  # 记录当前任务的仿真 ID
+
         # 用于在本地存下框架传给我们的工具和守则，方便后续分析
         self.tools: List = []
         self.system_prompt: str = ""
@@ -42,6 +61,23 @@ class MoshiRealtimeProvider:
 
         # 🎯 实例化新解耦的后端认知代理类
         self.backend_agent = BackendAgent()
+
+    def acquire_worker_port(self) -> int:
+        """从全局空闲端口池中借出一个 Moshi Worker 端口。"""
+        try:
+            self.port = MOSHI_PORT_POOL.get(timeout=30.0)  # 最多等待 30 秒空闲 Worker
+            self.ws_url = f"ws://{self.host}:{self.port}/api/chat"
+            logger.info(f"🔑 Acquired Moshi Worker on port {self.port} (Remaining idle workers: {MOSHI_PORT_POOL.qsize()})")
+            return self.port
+        except queue.Empty:
+            raise RuntimeError("Timeout waiting for an idle Moshi GPU worker! All 8 workers are busy.")
+
+    def release_worker_port(self) -> None:
+        """任务结束，将 Worker 端口归还给全局池，供下一个并发任务复用。"""
+        if self.port is not None:
+            MOSHI_PORT_POOL.put(self.port)
+            logger.info(f"🔓 Released Moshi Worker port {self.port} back to pool.")
+            self.port = None
 
     @property
     def is_connected(self) -> bool:
@@ -202,14 +238,24 @@ class MoshiRealtimeProvider:
         """只负责将 Moshi 临时积攒的文本打包存入最终的对话历史中。"""
         content = self._current_agent_turn_text.strip()
         if content:
+            # 1. 彻底剔除所有的 <tool_call> 控制标记
             clean_content = re.sub(r"<tool_call>.*?</tool_call>|<tool_call>", "", content)
-            clean_content = re.sub(r"<tool_response>.*?</tool_response>|<tool_response>.*", "", clean_content, flags=re.DOTALL)
+            
+            # 2. 🎯 核心清洗：凡是包含 </tool_response> 的文本，把包括它在内的前半截事实全部切掉！
+            if "</tool_response>" in clean_content:
+                clean_content = clean_content.split("</tool_response>")[-1]
+            else:
+                clean_content = re.sub(r"<tool_response>.*", "", clean_content, flags=re.DOTALL)
+                
             clean_content = clean_content.strip()
+            # 3. 剔除开头可能残留的单个 '>' 或换行等脏字符
+            clean_content = re.sub(r"^[>\s\.\:\-_]+", "", clean_content)
+            
             if clean_content:
                 self.conversation_history.append({"role": "assistant", "content": clean_content})
                 logger.info(f"📝 [History Commit] assistant: {clean_content}")
                 print(f"\n\n📂 [CURRENT HISTORY STATE]\n{json.dumps(self.conversation_history, indent=2, ensure_ascii=False)}\n\n", flush=True)
-        # 清空重置
+        
         self._current_agent_turn_text = ""
 
     async def receive_events_for_duration(self, duration_seconds: float) -> List[BaseMoshiEvent]:
@@ -217,13 +263,11 @@ class MoshiRealtimeProvider:
             if not self.is_connected:
                 return []
 
-            while len(SHARED_USER_TRANSCRIPTS) > self._last_user_index + 1:
-                # 1) 用户开始新一轮发言，意味着 Moshi 上一轮的发言已经结束，先将其打包存入历史
+            current_transcripts = SHARED_USER_TRANSCRIPTS_MAP[self.sim_id] if self.sim_id else []
+            while len(current_transcripts) > self._last_user_index + 1:
                 self._commit_current_turn()
-
-                # 2) 提取用户的新发言并追加到最终历史中
                 self._last_user_index += 1
-                new_user_text = SHARED_USER_TRANSCRIPTS[self._last_user_index].strip()
+                new_user_text = current_transcripts[self._last_user_index].strip()
                 if new_user_text:
                     self.conversation_history.append({"role": "user", "content": new_user_text})
                     logger.info(f"📝 [History Commit] user: {new_user_text}")
@@ -350,11 +394,12 @@ class MoshiRealtimeProvider:
         pass
     
     def reset_state(self) -> None:
-        """任务结束时彻底清空 Provider 的对话历史、临时缓存与全局共享信箱。"""
-        global SHARED_USER_TRANSCRIPTS
-        SHARED_USER_TRANSCRIPTS.clear()
+        """任务结束时彻底清空 Provider 的对话历史与当前任务的专属信箱。"""
+        if self.sim_id and self.sim_id in SHARED_USER_TRANSCRIPTS_MAP:
+            del SHARED_USER_TRANSCRIPTS_MAP[self.sim_id]
         self.conversation_history.clear()
         self._current_agent_turn_text = ""
         self._last_user_index = -1
         self._audio_chunks_queue.clear()
-        logger.info("🧹 [State Reset] Provider and shared mailbox fully cleared for next task.")
+        self.release_worker_port()  # 归还端口
+        logger.info("🧹 [State Reset] Provider state fully reset and worker port returned.")

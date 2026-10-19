@@ -63,6 +63,11 @@ class MoshiDiscreteTimeAdapter(DiscreteTimeAdapter):
         if self._connected:
             return
 
+        from tau2.runner.batch import _current_simulation_id
+        sim_id = _current_simulation_id.get() or f"thread_{threading.get_ident()}"
+        self.provider.sim_id = sim_id
+        self.provider.acquire_worker_port()  # 动态借出 8990~8997 中的一个
+
         # 🎯 性能优化核心：在连接最开始，对音频重采样和压缩库进行一次“冷启动预热”
         # 强行迫使操作系统提前将 scipy/soundfile 的外部 C 库装载进内存中，
         # 从而彻底免除 Tick 1 的 CPU 冷启动延迟！

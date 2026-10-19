@@ -1273,9 +1273,11 @@ class VoiceStreamingUserSimulator(
 
         # Append user agent generated text to Moshi global message box
         try:
-            from tau2.voice.audio_native.moshi.provider import SHARED_USER_TRANSCRIPTS
-            SHARED_USER_TRANSCRIPTS.append(assistant_message.content)
-            print(f"\n\n🚨🚨🚨 [SHARED MAILBOX] Wrote to Moshi Mailbox: '{assistant_message.content}' 🚨🚨🚨\n\n", flush=True)
+            from tau2.runner.batch import _current_simulation_id
+            from tau2.voice.audio_native.moshi.provider import SHARED_USER_TRANSCRIPTS_MAP
+            sim_id = _current_simulation_id.get() or f"thread_{threading.get_ident()}"
+            SHARED_USER_TRANSCRIPTS_MAP[sim_id].append(assistant_message.content)
+            # print(f"\n\n🚨🚨🚨 [SHARED MAILBOX ({sim_id})] Wrote to Moshi Mailbox: '{assistant_message.content}' 🚨🚨🚨\n\n", flush=True)
         except Exception as share_err:
             logger.warning(f"Failed to share text to Moshi mailbox: {share_err}")
 

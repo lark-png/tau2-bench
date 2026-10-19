@@ -1,0 +1,35 @@
+diff --git a/src/tau2/config.py b/src/tau2/config.py
+@@
+ DEFAULT_AUDIO_NATIVE_MODELS = {
+@@
++    "gander": "gander-local",
+ }
+@@
+ DEFAULT_AUDIO_NATIVE_REASONING_EFFORT: dict[str, str | None] = {
+@@
++    "gander": None,
+ }
+@@
+ AUDIO_NATIVE_PROVIDER_TYPES = {
+@@
++    "gander": "audio_native",
+ }
+diff --git a/src/tau2/voice/audio_native/adapter.py b/src/tau2/voice/audio_native/adapter.py
+@@
+     elif provider == "moshi":
+         from tau2.voice.audio_native.moshi.discrete_time_adapter import MoshiDiscreteTimeAdapter
+         adapter = MoshiDiscreteTimeAdapter(tick_duration_ms=tick_duration_ms, send_audio_instant=send_audio_instant)
++    elif provider == "gander":
++        from tau2.voice.audio_native.gander.discrete_time_adapter import GanderDiscreteTimeAdapter
++        adapter = GanderDiscreteTimeAdapter(
++            tick_duration_ms=tick_duration_ms,
++            send_audio_instant=send_audio_instant,
++            audio_format=audio_format,
++        )
+     else:
+         raise ValueError(f"Unknown provider: {provider}")
+diff --git a/src/tau2/agent/discrete_time_audio_native_agent.py b/src/tau2/agent/discrete_time_audio_native_agent.py
+@@
+-    "openai", "openai_live", "gemini", "xai", "nova", "qwen", "livekit"
++    "openai", "openai_live", "gemini", "xai", "nova", "qwen", "livekit", "moshi", "gander"
+ ]
